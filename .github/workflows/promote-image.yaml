@@ -1,0 +1,90 @@
+name: "Promote ECR Image"
+
+permissions:
+  id-token: write
+  contents: read
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        required: true
+        type: string
+      image_tag:
+        required: false
+        type: string
+      src_role_arn:
+        required: true
+        type: string
+      src_ecr_url:
+        required: true
+        type: string
+      dst_role_arn:
+        required: true
+        type: string
+      dst_ecr_url:
+        required: true
+        type: string
+      deploy_env:
+        required: true
+        type: string
+
+jobs:
+  promote:
+    name: Promote ${{ inputs.service_name }} → ${{ inputs.deploy_env }}
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.deploy_env }}
+
+    steps:
+      - name: Resolve repository name and image tag
+        run: |
+          set -euo pipefail
+          REPO_NAME=${GITHUB_REPOSITORY#*/}
+          REPO_NAME=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
+          TAG="${{ inputs.image_tag }}"
+          TAG=${TAG:-$GITHUB_RUN_ID}
+          echo "REPO_NAME=$REPO_NAME" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Configure AWS Credentials (source)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ inputs.src_role_arn }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to source ECR & pull image
+        run: |
+          set -euo pipefail
+
+          SRC_IMAGE="${{ inputs.src_ecr_url }}/${REPO_NAME}:${{ inputs.service_name }}-${TAG}"
+
+          aws ecr get-login-password --region ${{ vars.AWS_REGION }} \
+            | docker login --username AWS --password-stdin ${{ inputs.src_ecr_url }}
+
+          docker pull "$SRC_IMAGE"
+
+      - name: Configure AWS Credentials (destination)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ inputs.dst_role_arn }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Ensure destination ECR repository exists
+        run: |
+          set -euo pipefail
+          if ! aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1; then
+            aws ecr create-repository --repository-name "$REPO_NAME" >/dev/null
+          fi
+
+      - name: Login to destination ECR, retag & push
+        run: |
+          set -euo pipefail
+
+          SRC_IMAGE="${{ inputs.src_ecr_url }}/${REPO_NAME}:${{ inputs.service_name }}-${TAG}"
+          DST_IMAGE="${{ inputs.dst_ecr_url }}/${REPO_NAME}:${{ inputs.service_name }}-${TAG}"
+
+          aws ecr get-login-password --region ${{ vars.AWS_REGION }} \
+            | docker login --username AWS --password-stdin ${{ inputs.dst_ecr_url }}
+
+          docker tag "$SRC_IMAGE" "$DST_IMAGE"
+          docker push "$DST_IMAGE"
