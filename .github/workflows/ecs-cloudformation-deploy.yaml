@@ -1,0 +1,331 @@
+name: "Deploy ECS CloudFormation Stack"
+
+permissions:
+  id-token: write
+  contents: read
+
+on:
+  workflow_call:
+    inputs:
+      environment_name:
+        required: true
+        type: string
+      service_name:
+        required: true
+        type: string
+      image_tag:
+        required: false
+        type: string
+      aws_role_arn:
+        required: true
+        type: string
+      aws_region:
+        required: true
+        type: string
+      ecr_url:
+        required: true
+        type: string
+      ecs_cluster_name:
+        required: true
+        type: string
+      subnet_ids:
+        required: true
+        type: string
+      security_group_ids:
+        required: true
+        type: string
+      task_execution_role_arn:
+        required: true
+        type: string
+      task_role_arn:
+        required: true
+        type: string
+      template_file:
+        required: false
+        type: string
+        default: common/cloudformation/templates/ecs-service.yaml
+      application_config_file:
+        required: false
+        type: string
+      stack_name:
+        required: false
+        type: string
+      repository_name:
+        required: false
+        type: string
+      desired_count:
+        required: false
+        type: string
+      cpu:
+        required: false
+        type: string
+      memory:
+        required: false
+        type: string
+      container_port:
+        required: false
+        type: string
+      assign_public_ip:
+        required: false
+        type: string
+      log_retention_in_days:
+        required: false
+        type: string
+      enable_execute_command:
+        required: false
+        type: string
+      deployment_min_healthy_percent:
+        required: false
+        type: string
+      deployment_max_percent:
+        required: false
+        type: string
+      target_group_arn:
+        required: false
+        type: string
+      health_check_grace_period_seconds:
+        required: false
+        type: string
+      platform_version:
+        required: false
+        type: string
+      deployment_circuit_breaker_enabled:
+        required: false
+        type: string
+      deployment_circuit_breaker_rollback:
+        required: false
+        type: string
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.service_name }} (${{ inputs.environment_name }})
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment_name }}
+    concurrency:
+      group: ecs-cf-${{ github.repository }}-${{ inputs.service_name }}-${{ inputs.environment_name }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ inputs.aws_role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Resolve deployment metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SERVICE_NAME="${{ inputs.service_name }}"
+          ENVIRONMENT_NAME="${{ inputs.environment_name }}"
+          STACK_NAME="${{ inputs.stack_name }}"
+          TEMPLATE_FILE="${{ inputs.template_file }}"
+          APP_CONFIG_FILE="${{ inputs.application_config_file }}"
+          REPOSITORY_NAME="${{ inputs.repository_name }}"
+          IMAGE_TAG="${{ inputs.image_tag }}"
+
+          if [ -z "$STACK_NAME" ]; then
+            STACK_NAME="${SERVICE_NAME}-${ENVIRONMENT_NAME}"
+          fi
+
+          if [ -z "$APP_CONFIG_FILE" ]; then
+            APP_CONFIG_FILE="common/cloudformation/templates/application-${ENVIRONMENT_NAME}.yaml"
+          fi
+
+          if [ -z "$REPOSITORY_NAME" ]; then
+            REPOSITORY_NAME="${GITHUB_REPOSITORY#*/}"
+          fi
+          REPOSITORY_NAME=$(echo "$REPOSITORY_NAME" | tr "[:upper:]" "[:lower:]")
+
+          if [ -z "$IMAGE_TAG" ]; then
+            IMAGE_TAG="$GITHUB_RUN_ID"
+          fi
+
+          if [ ! -f "$TEMPLATE_FILE" ]; then
+            echo "Template file not found: $TEMPLATE_FILE"
+            exit 1
+          fi
+
+          if [ ! -f "$APP_CONFIG_FILE" ]; then
+            echo "Application config file not found: $APP_CONFIG_FILE"
+            exit 1
+          fi
+
+          echo "STACK_NAME=$STACK_NAME" >> "$GITHUB_ENV"
+          echo "TEMPLATE_FILE=$TEMPLATE_FILE" >> "$GITHUB_ENV"
+          echo "APP_CONFIG_FILE=$APP_CONFIG_FILE" >> "$GITHUB_ENV"
+          echo "REPOSITORY_NAME=$REPOSITORY_NAME" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+
+      - name: Assemble CloudFormation parameters
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PARAMS=(
+            "EnvironmentName=${{ inputs.environment_name }}"
+            "ServiceName=${{ inputs.service_name }}"
+            "ImageTag=${IMAGE_TAG}"
+            "EcrUrl=${{ inputs.ecr_url }}"
+            "RepoName=${REPOSITORY_NAME}"
+            "ClusterName=${{ inputs.ecs_cluster_name }}"
+            "SubnetIds=${{ inputs.subnet_ids }}"
+            "SecurityGroupIds=${{ inputs.security_group_ids }}"
+            "TaskExecutionRoleArn=${{ inputs.task_execution_role_arn }}"
+            "TaskRoleArn=${{ inputs.task_role_arn }}"
+          )
+
+          mapfile -t APP_FILE_PARAMS < <(
+            python3 - "${APP_CONFIG_FILE}" <<'PY'
+            import re
+            import sys
+
+            path = sys.argv[1]
+            max_items = 10
+            variable_name_pattern = re.compile(r"^[A-Z][A-Z0-9_]*$")
+            deployment_keys = {
+                "DesiredCount",
+                "Cpu",
+                "Memory",
+                "ContainerPort",
+                "AssignPublicIp",
+                "LogRetentionInDays",
+                "EnableExecuteCommand",
+                "DeploymentMinHealthyPercent",
+                "DeploymentMaxPercent",
+                "TargetGroupArn",
+                "HealthCheckGracePeriodSeconds",
+                "PlatformVersion",
+                "DeploymentCircuitBreakerEnabled",
+                "DeploymentCircuitBreakerRollback",
+            }
+
+            deployment_params = []
+            environment_items = []
+            secret_items = []
+
+            with open(path, "r", encoding="utf-8") as handle:
+                for line_number, raw_line in enumerate(handle, start=1):
+                    stripped = raw_line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    if ":" not in stripped:
+                        raise SystemExit(f"Invalid line {line_number} in {path}: {stripped}")
+
+                    key, value = stripped.split(":", 1)
+                    key = key.strip()
+                    value = value.strip()
+
+                    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                        value = value[1:-1]
+
+                    if key in deployment_keys:
+                        deployment_params.append((key, value))
+                        continue
+
+                    if key.startswith("Env.") or key.startswith("Environment."):
+                        _, name = key.split(".", 1)
+                        if not variable_name_pattern.match(name):
+                            raise SystemExit(
+                                f"Invalid environment variable name '{name}' in {path} line {line_number}. "
+                                "Expected pattern: ^[A-Z][A-Z0-9_]*$"
+                            )
+                        if value == "":
+                            raise SystemExit(
+                                f"Environment variable '{name}' in {path} line {line_number} has an empty value."
+                            )
+                        environment_items.append((name, value))
+                        continue
+
+                    if key.startswith("Secret.") or key.startswith("Secrets."):
+                        _, name = key.split(".", 1)
+                        if not variable_name_pattern.match(name):
+                            raise SystemExit(
+                                f"Invalid secret variable name '{name}' in {path} line {line_number}. "
+                                "Expected pattern: ^[A-Z][A-Z0-9_]*$"
+                            )
+                        if value == "":
+                            raise SystemExit(
+                                f"Secret variable '{name}' in {path} line {line_number} has an empty value."
+                            )
+                        secret_items.append((name, value))
+                        continue
+
+                    raise SystemExit(
+                        f"Unsupported key '{key}' in {path} line {line_number}. "
+                        "Use deployment keys, Env.<NAME>, or Secret.<NAME>."
+                    )
+
+            if len(environment_items) > max_items:
+                raise SystemExit(
+                    f"{path} defines {len(environment_items)} environment variables, max supported is {max_items}."
+                )
+            if len(secret_items) > max_items:
+                raise SystemExit(
+                    f"{path} defines {len(secret_items)} secret variables, max supported is {max_items}."
+                )
+
+            for key, value in deployment_params:
+                print(f"{key}={value}")
+
+            for index, (name, value) in enumerate(environment_items, start=1):
+                slot = f"{index:02d}"
+                print(f"EnvVar{slot}Name={name}")
+                print(f"EnvVar{slot}Value={value}")
+
+            for index, (name, value) in enumerate(secret_items, start=1):
+                slot = f"{index:02d}"
+                print(f"SecretVar{slot}Name={name}")
+                print(f"SecretVar{slot}ValueFrom={value}")
+            PY
+          )
+
+          for parameter in "${APP_FILE_PARAMS[@]}"; do
+            PARAMS+=("$parameter")
+          done
+
+          optional_input_to_param() {
+            local input_value="$1"
+            local parameter_key="$2"
+            if [ -n "$input_value" ]; then
+              PARAMS+=("${parameter_key}=${input_value}")
+            fi
+          }
+
+          optional_input_to_param "${{ inputs.desired_count }}" "DesiredCount"
+          optional_input_to_param "${{ inputs.cpu }}" "Cpu"
+          optional_input_to_param "${{ inputs.memory }}" "Memory"
+          optional_input_to_param "${{ inputs.container_port }}" "ContainerPort"
+          optional_input_to_param "${{ inputs.assign_public_ip }}" "AssignPublicIp"
+          optional_input_to_param "${{ inputs.log_retention_in_days }}" "LogRetentionInDays"
+          optional_input_to_param "${{ inputs.enable_execute_command }}" "EnableExecuteCommand"
+          optional_input_to_param "${{ inputs.deployment_min_healthy_percent }}" "DeploymentMinHealthyPercent"
+          optional_input_to_param "${{ inputs.deployment_max_percent }}" "DeploymentMaxPercent"
+          optional_input_to_param "${{ inputs.target_group_arn }}" "TargetGroupArn"
+          optional_input_to_param "${{ inputs.health_check_grace_period_seconds }}" "HealthCheckGracePeriodSeconds"
+          optional_input_to_param "${{ inputs.platform_version }}" "PlatformVersion"
+          optional_input_to_param "${{ inputs.deployment_circuit_breaker_enabled }}" "DeploymentCircuitBreakerEnabled"
+          optional_input_to_param "${{ inputs.deployment_circuit_breaker_rollback }}" "DeploymentCircuitBreakerRollback"
+
+          {
+            echo "PARAMS<<EOF"
+            printf '%s\n' "${PARAMS[@]}"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Deploy CloudFormation stack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t PARAMS_ARRAY <<< "$PARAMS"
+
+          aws cloudformation deploy \
+            --stack-name "${STACK_NAME}" \
+            --template-file "${TEMPLATE_FILE}" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --tags "Service=${{ inputs.service_name }}" "Environment=${{ inputs.environment_name }}" \
+            --parameter-overrides "${PARAMS_ARRAY[@]}"
