@@ -1,0 +1,19 @@
+# Shared deployment parameters for prod.
+DesiredCount: 2
+Cpu: 512
+Memory: 1024
+ContainerPort: 3000
+AssignPublicIp: DISABLED
+LogRetentionInDays: 30
+EnableExecuteCommand: "false"
+DeploymentMinHealthyPercent: 50
+DeploymentMaxPercent: 200
+TargetGroupArn: ""
+HealthCheckGracePeriodSeconds: 60
+PlatformVersion: LATEST
+
+# Container environment variables (Env.<NAME>).
+Env.APP_ENV: prod
+
+# Container secrets (Secret.<NAME>) from Secrets Manager or SSM.
+# Secret.API_KEY: arn:aws:secretsmanager:ap-south-1:111111111111:secret:my-prod-api-key
