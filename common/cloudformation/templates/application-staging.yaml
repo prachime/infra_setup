@@ -1,0 +1,19 @@
+# Shared deployment parameters for staging.
+DesiredCount: 1
+Cpu: 256
+Memory: 512
+ContainerPort: 3000
+AssignPublicIp: DISABLED
+LogRetentionInDays: 14
+EnableExecuteCommand: "false"
+DeploymentMinHealthyPercent: 50
+DeploymentMaxPercent: 200
+TargetGroupArn: ""
+HealthCheckGracePeriodSeconds: 60
+PlatformVersion: LATEST
+
+# Container environment variables (Env.<NAME>).
+Env.APP_ENV: staging
+
+# Container secrets (Secret.<NAME>) from Secrets Manager or SSM.
+# Secret.API_KEY: arn:aws:secretsmanager:ap-south-1:111111111111:secret:my-staging-api-key

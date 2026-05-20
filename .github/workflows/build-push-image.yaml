@@ -1,4 +1,4 @@
-name: "Build & Push to DEV"
+name: "Build & Push Image to DEV"
 
 permissions:
   id-token: write
@@ -24,10 +24,14 @@ on:
         required: false
         type: string
         default: "Dockerfile"
+      platforms:
+        required: false
+        type: string
+        default: "linux/amd64,linux/arm64"
 
 jobs:
   build-push-dev:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v6
@@ -41,6 +45,23 @@ jobs:
           role-to-assume: ${{ vars.DEV_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      - name: Resolve repository name and image tag
+        run: |
+          set -euo pipefail
+          REPO_NAME=${GITHUB_REPOSITORY#*/}
+          REPO_NAME=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
+          TAG="${{ inputs.image_tag }}"
+          TAG=${TAG:-$GITHUB_RUN_ID}
+          echo "REPO_NAME=$REPO_NAME" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Ensure DEV ECR repository exists
+        run: |
+          set -euo pipefail
+          if ! aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1; then
+            aws ecr create-repository --repository-name "$REPO_NAME" >/dev/null
+          fi
+
       - name: Login to DEV ECR
         run: |
           aws ecr get-login-password --region ${{ vars.AWS_REGION }} \
@@ -50,18 +71,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          REPO_NAME=${GITHUB_REPOSITORY#"avijo1403/"}
-
-          # Convert repo name to lowercase
-          REPO_NAME=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
-
-          TAG="${{ inputs.image_tag }}"
-          TAG=${TAG:-$GITHUB_RUN_ID}
-
           IMAGE="${{ vars.DEV_ECR_URL }}/${REPO_NAME}:${{ inputs.service_name }}-${TAG}"
 
           docker buildx build \
-            --platform linux/arm64 \
+            --platform "${{ inputs.platforms }}" \
             -f "${{ inputs.dockerfile }}" \
             -t "$IMAGE" \
             --push \

@@ -1,0 +1,441 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Generic ECS Fargate service stack."
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: "Environment name (dev/staging/prod)."
+  ServiceName:
+    Type: String
+    Description: "Service name."
+    AllowedPattern: "^[a-z0-9-]+$"
+    ConstraintDescription: "Use lowercase letters, digits, and hyphens only."
+  ImageTag:
+    Type: String
+    Description: "Image tag to deploy (without service-name prefix)."
+  EcrUrl:
+    Type: String
+    Description: "ECR registry URL (no trailing slash)."
+  RepoName:
+    Type: String
+    Description: "ECR repository name."
+  ClusterName:
+    Type: String
+    Description: "ECS cluster name."
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: "Subnet IDs for the service."
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: "Security group IDs for the service."
+  TaskExecutionRoleArn:
+    Type: String
+    Description: "Task execution role ARN."
+  TaskRoleArn:
+    Type: String
+    Description: "Task role ARN."
+  EnvVar01Name:
+    Type: String
+    Default: ""
+  EnvVar01Value:
+    Type: String
+    Default: ""
+  EnvVar02Name:
+    Type: String
+    Default: ""
+  EnvVar02Value:
+    Type: String
+    Default: ""
+  EnvVar03Name:
+    Type: String
+    Default: ""
+  EnvVar03Value:
+    Type: String
+    Default: ""
+  EnvVar04Name:
+    Type: String
+    Default: ""
+  EnvVar04Value:
+    Type: String
+    Default: ""
+  EnvVar05Name:
+    Type: String
+    Default: ""
+  EnvVar05Value:
+    Type: String
+    Default: ""
+  EnvVar06Name:
+    Type: String
+    Default: ""
+  EnvVar06Value:
+    Type: String
+    Default: ""
+  EnvVar07Name:
+    Type: String
+    Default: ""
+  EnvVar07Value:
+    Type: String
+    Default: ""
+  EnvVar08Name:
+    Type: String
+    Default: ""
+  EnvVar08Value:
+    Type: String
+    Default: ""
+  EnvVar09Name:
+    Type: String
+    Default: ""
+  EnvVar09Value:
+    Type: String
+    Default: ""
+  EnvVar10Name:
+    Type: String
+    Default: ""
+  EnvVar10Value:
+    Type: String
+    Default: ""
+  SecretVar01Name:
+    Type: String
+    Default: ""
+  SecretVar01ValueFrom:
+    Type: String
+    Default: ""
+  SecretVar02Name:
+    Type: String
+    Default: ""
+  SecretVar02ValueFrom:
+    Type: String
+    Default: ""
+  SecretVar03Name:
+    Type: String
+    Default: ""
+  SecretVar03ValueFrom:
+    Type: String
+    Default: ""
+  SecretVar04Name:
+    Type: String
+    Default: ""
+  SecretVar04ValueFrom:
+    Type: String
+    Default: ""
+  SecretVar05Name:
+    Type: String
+    Default: ""
+  SecretVar05ValueFrom:
+    Type: String
+    Default: ""
+  SecretVar06Name:
+    Type: String
+    Default: ""
+  SecretVar06ValueFrom:
+    Type: String
+    Default: ""
+  SecretVar07Name:
+    Type: String
+    Default: ""
+  SecretVar07ValueFrom:
+    Type: String
+    Default: ""
+  SecretVar08Name:
+    Type: String
+    Default: ""
+  SecretVar08ValueFrom:
+    Type: String
+    Default: ""
+  SecretVar09Name:
+    Type: String
+    Default: ""
+  SecretVar09ValueFrom:
+    Type: String
+    Default: ""
+  SecretVar10Name:
+    Type: String
+    Default: ""
+  SecretVar10ValueFrom:
+    Type: String
+    Default: ""
+  DesiredCount:
+    Type: Number
+    Default: 1
+  Cpu:
+    Type: Number
+    Default: 256
+  Memory:
+    Type: Number
+    Default: 512
+  ContainerPort:
+    Type: Number
+    Default: 3000
+  AssignPublicIp:
+    Type: String
+    Default: DISABLED
+    AllowedValues:
+      - ENABLED
+      - DISABLED
+  LogRetentionInDays:
+    Type: Number
+    Default: 14
+  HealthCheckGracePeriodSeconds:
+    Type: Number
+    Default: 60
+  EnableExecuteCommand:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+  DeploymentMinHealthyPercent:
+    Type: Number
+    Default: 50
+  DeploymentMaxPercent:
+    Type: Number
+    Default: 200
+  TargetGroupArn:
+    Type: String
+    Default: ""
+    Description: "Optional ALB/NLB target group ARN."
+  PlatformVersion:
+    Type: String
+    Default: LATEST
+  DeploymentCircuitBreakerEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+  DeploymentCircuitBreakerRollback:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+
+Conditions:
+  HasTargetGroupArn: !Not
+    - !Equals
+      - !Ref TargetGroupArn
+      - ""
+  HasEnvVar01: !And [!Not [!Equals [!Ref EnvVar01Name, ""]], !Not [!Equals [!Ref EnvVar01Value, ""]]]
+  HasEnvVar02: !And [!Not [!Equals [!Ref EnvVar02Name, ""]], !Not [!Equals [!Ref EnvVar02Value, ""]]]
+  HasEnvVar03: !And [!Not [!Equals [!Ref EnvVar03Name, ""]], !Not [!Equals [!Ref EnvVar03Value, ""]]]
+  HasEnvVar04: !And [!Not [!Equals [!Ref EnvVar04Name, ""]], !Not [!Equals [!Ref EnvVar04Value, ""]]]
+  HasEnvVar05: !And [!Not [!Equals [!Ref EnvVar05Name, ""]], !Not [!Equals [!Ref EnvVar05Value, ""]]]
+  HasEnvVar06: !And [!Not [!Equals [!Ref EnvVar06Name, ""]], !Not [!Equals [!Ref EnvVar06Value, ""]]]
+  HasEnvVar07: !And [!Not [!Equals [!Ref EnvVar07Name, ""]], !Not [!Equals [!Ref EnvVar07Value, ""]]]
+  HasEnvVar08: !And [!Not [!Equals [!Ref EnvVar08Name, ""]], !Not [!Equals [!Ref EnvVar08Value, ""]]]
+  HasEnvVar09: !And [!Not [!Equals [!Ref EnvVar09Name, ""]], !Not [!Equals [!Ref EnvVar09Value, ""]]]
+  HasEnvVar10: !And [!Not [!Equals [!Ref EnvVar10Name, ""]], !Not [!Equals [!Ref EnvVar10Value, ""]]]
+  HasAnyEnvVars: !Or
+    - !Condition HasEnvVar01
+    - !Condition HasEnvVar02
+    - !Condition HasEnvVar03
+    - !Condition HasEnvVar04
+    - !Condition HasEnvVar05
+    - !Condition HasEnvVar06
+    - !Condition HasEnvVar07
+    - !Condition HasEnvVar08
+    - !Condition HasEnvVar09
+    - !Condition HasEnvVar10
+  HasSecretVar01: !And [!Not [!Equals [!Ref SecretVar01Name, ""]], !Not [!Equals [!Ref SecretVar01ValueFrom, ""]]]
+  HasSecretVar02: !And [!Not [!Equals [!Ref SecretVar02Name, ""]], !Not [!Equals [!Ref SecretVar02ValueFrom, ""]]]
+  HasSecretVar03: !And [!Not [!Equals [!Ref SecretVar03Name, ""]], !Not [!Equals [!Ref SecretVar03ValueFrom, ""]]]
+  HasSecretVar04: !And [!Not [!Equals [!Ref SecretVar04Name, ""]], !Not [!Equals [!Ref SecretVar04ValueFrom, ""]]]
+  HasSecretVar05: !And [!Not [!Equals [!Ref SecretVar05Name, ""]], !Not [!Equals [!Ref SecretVar05ValueFrom, ""]]]
+  HasSecretVar06: !And [!Not [!Equals [!Ref SecretVar06Name, ""]], !Not [!Equals [!Ref SecretVar06ValueFrom, ""]]]
+  HasSecretVar07: !And [!Not [!Equals [!Ref SecretVar07Name, ""]], !Not [!Equals [!Ref SecretVar07ValueFrom, ""]]]
+  HasSecretVar08: !And [!Not [!Equals [!Ref SecretVar08Name, ""]], !Not [!Equals [!Ref SecretVar08ValueFrom, ""]]]
+  HasSecretVar09: !And [!Not [!Equals [!Ref SecretVar09Name, ""]], !Not [!Equals [!Ref SecretVar09ValueFrom, ""]]]
+  HasSecretVar10: !And [!Not [!Equals [!Ref SecretVar10Name, ""]], !Not [!Equals [!Ref SecretVar10ValueFrom, ""]]]
+  HasAnySecretVars: !Or
+    - !Condition HasSecretVar01
+    - !Condition HasSecretVar02
+    - !Condition HasSecretVar03
+    - !Condition HasSecretVar04
+    - !Condition HasSecretVar05
+    - !Condition HasSecretVar06
+    - !Condition HasSecretVar07
+    - !Condition HasSecretVar08
+    - !Condition HasSecretVar09
+    - !Condition HasSecretVar10
+
+Resources:
+  ServiceLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ServiceName}-${EnvironmentName}"
+      RetentionInDays: !Ref LogRetentionInDays
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ServiceName}-${EnvironmentName}"
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !Ref TaskExecutionRoleArn
+      TaskRoleArn: !Ref TaskRoleArn
+      ContainerDefinitions:
+        - Name: !Ref ServiceName
+          Image: !Sub "${EcrUrl}/${RepoName}:${ServiceName}-${ImageTag}"
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+          Environment: !If
+            - HasAnyEnvVars
+            - - !If
+                  - HasEnvVar01
+                  - Name: !Ref EnvVar01Name
+                    Value: !Ref EnvVar01Value
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasEnvVar02
+                  - Name: !Ref EnvVar02Name
+                    Value: !Ref EnvVar02Value
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasEnvVar03
+                  - Name: !Ref EnvVar03Name
+                    Value: !Ref EnvVar03Value
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasEnvVar04
+                  - Name: !Ref EnvVar04Name
+                    Value: !Ref EnvVar04Value
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasEnvVar05
+                  - Name: !Ref EnvVar05Name
+                    Value: !Ref EnvVar05Value
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasEnvVar06
+                  - Name: !Ref EnvVar06Name
+                    Value: !Ref EnvVar06Value
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasEnvVar07
+                  - Name: !Ref EnvVar07Name
+                    Value: !Ref EnvVar07Value
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasEnvVar08
+                  - Name: !Ref EnvVar08Name
+                    Value: !Ref EnvVar08Value
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasEnvVar09
+                  - Name: !Ref EnvVar09Name
+                    Value: !Ref EnvVar09Value
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasEnvVar10
+                  - Name: !Ref EnvVar10Name
+                    Value: !Ref EnvVar10Value
+                  - !Ref AWS::NoValue
+            - !Ref AWS::NoValue
+          Secrets: !If
+            - HasAnySecretVars
+            - - !If
+                  - HasSecretVar01
+                  - Name: !Ref SecretVar01Name
+                    ValueFrom: !Ref SecretVar01ValueFrom
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasSecretVar02
+                  - Name: !Ref SecretVar02Name
+                    ValueFrom: !Ref SecretVar02ValueFrom
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasSecretVar03
+                  - Name: !Ref SecretVar03Name
+                    ValueFrom: !Ref SecretVar03ValueFrom
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasSecretVar04
+                  - Name: !Ref SecretVar04Name
+                    ValueFrom: !Ref SecretVar04ValueFrom
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasSecretVar05
+                  - Name: !Ref SecretVar05Name
+                    ValueFrom: !Ref SecretVar05ValueFrom
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasSecretVar06
+                  - Name: !Ref SecretVar06Name
+                    ValueFrom: !Ref SecretVar06ValueFrom
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasSecretVar07
+                  - Name: !Ref SecretVar07Name
+                    ValueFrom: !Ref SecretVar07ValueFrom
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasSecretVar08
+                  - Name: !Ref SecretVar08Name
+                    ValueFrom: !Ref SecretVar08ValueFrom
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasSecretVar09
+                  - Name: !Ref SecretVar09Name
+                    ValueFrom: !Ref SecretVar09ValueFrom
+                  - !Ref AWS::NoValue
+              - !If
+                  - HasSecretVar10
+                  - Name: !Ref SecretVar10Name
+                    ValueFrom: !Ref SecretVar10ValueFrom
+                  - !Ref AWS::NoValue
+            - !Ref AWS::NoValue
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ServiceLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${ServiceName}-${EnvironmentName}"
+      Cluster: !Ref ClusterName
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: !Ref PlatformVersion
+      TaskDefinition: !Ref TaskDefinition
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      EnableExecuteCommand: !Equals [!Ref EnableExecuteCommand, "true"]
+      DeploymentConfiguration:
+        MinimumHealthyPercent: !Ref DeploymentMinHealthyPercent
+        MaximumPercent: !Ref DeploymentMaxPercent
+        DeploymentCircuitBreaker:
+          Enable: !Equals [!Ref DeploymentCircuitBreakerEnabled, "true"]
+          Rollback: !Equals [!Ref DeploymentCircuitBreakerRollback, "true"]
+      HealthCheckGracePeriodSeconds: !If
+        - HasTargetGroupArn
+        - !Ref HealthCheckGracePeriodSeconds
+        - !Ref AWS::NoValue
+      LoadBalancers: !If
+        - HasTargetGroupArn
+        - - ContainerName: !Ref ServiceName
+            ContainerPort: !Ref ContainerPort
+            TargetGroupArn: !Ref TargetGroupArn
+        - !Ref AWS::NoValue
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: !Ref AssignPublicIp
+          Subnets: !Ref SubnetIds
+          SecurityGroups: !Ref SecurityGroupIds
+      Tags:
+        - Key: Service
+          Value: !Ref ServiceName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  ServiceName:
+    Value: !Ref Service
+  TaskDefinitionArn:
+    Value: !Ref TaskDefinition
