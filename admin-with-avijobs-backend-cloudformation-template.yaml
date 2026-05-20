@@ -1,0 +1,145 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Service1 ECS Fargate stack (shared template)."
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: "Environment name (dev/staging/prod)."
+  ServiceName:
+    Type: String
+    Description: "Service name."
+  ImageTag:
+    Type: String
+    Description: "Image tag to deploy (service_name-tag format)."
+  EcrUrl:
+    Type: String
+    Description: "ECR registry URL (no trailing slash)."
+  RepoName:
+    Type: String
+    Description: "ECR repository name."
+  ClusterName:
+    Type: String
+    Description: "ECS cluster name."
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: "Subnet IDs for the service."
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: "Security group IDs for the service."
+  TaskExecutionRoleArn:
+    Type: String
+    Description: "Task execution role ARN."
+  TaskRoleArn:
+    Type: String
+    Description: "Task role ARN."
+  DesiredCount:
+    Type: Number
+    Default: 1
+  Cpu:
+    Type: Number
+    Default: 256
+  Memory:
+    Type: Number
+    Default: 512
+  ContainerPort:
+    Type: Number
+    Default: 3000
+  AssignPublicIp:
+    Type: String
+    Default: DISABLED
+    AllowedValues:
+      - ENABLED
+      - DISABLED
+  LogRetentionInDays:
+    Type: Number
+    Default: 14
+  HealthCheckGracePeriodSeconds:
+    Type: Number
+    Default: 60
+  EnableExecuteCommand:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+  DeploymentMinHealthyPercent:
+    Type: Number
+    Default: 50
+  DeploymentMaxPercent:
+    Type: Number
+    Default: 200
+  TargetGroupArn:
+    Type: String
+    Default: ""
+    Description: "Optional ALB/NLB target group ARN."
+
+Conditions:
+  HasTargetGroupArn: !Not
+    - !Equals
+      - !Ref TargetGroupArn
+      - ""
+
+Resources:
+  ServiceLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ServiceName}-${EnvironmentName}"
+      RetentionInDays: !Ref LogRetentionInDays
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ServiceName}-${EnvironmentName}"
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !Ref TaskExecutionRoleArn
+      TaskRoleArn: !Ref TaskRoleArn
+      ContainerDefinitions:
+        - Name: !Ref ServiceName
+          Image: !Sub "${EcrUrl}/${RepoName}:${ServiceName}-${ImageTag}"
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ServiceLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${ServiceName}-${EnvironmentName}"
+      Cluster: !Ref ClusterName
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      EnableExecuteCommand: !Equals [!Ref EnableExecuteCommand, "true"]
+      DeploymentConfiguration:
+        MinimumHealthyPercent: !Ref DeploymentMinHealthyPercent
+        MaximumPercent: !Ref DeploymentMaxPercent
+      HealthCheckGracePeriodSeconds: !If
+        - HasTargetGroupArn
+        - !Ref HealthCheckGracePeriodSeconds
+        - !Ref AWS::NoValue
+      LoadBalancers: !If
+        - HasTargetGroupArn
+        - - ContainerName: !Ref ServiceName
+            ContainerPort: !Ref ContainerPort
+            TargetGroupArn: !Ref TargetGroupArn
+        - !Ref AWS::NoValue
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: !Ref AssignPublicIp
+          Subnets: !Ref SubnetIds
+          SecurityGroups: !Ref SecurityGroupIds
+
+Outputs:
+  ServiceName:
+    Value: !Ref Service
+  TaskDefinitionArn:
+    Value: !Ref TaskDefinition
