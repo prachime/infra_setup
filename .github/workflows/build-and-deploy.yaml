@@ -1,0 +1,259 @@
+name: Generic ECS CloudFormation Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      service_name:
+        description: "Service name used in ECS service and image tag (optional if DEFAULT_SERVICE_NAME variable is set)."
+        required: false
+        type: string
+      image_tag:
+        description: "Optional image tag (defaults to workflow run id)."
+        required: false
+        type: string
+      context:
+        description: "Docker build context."
+        required: false
+        default: "."
+        type: string
+      dockerfile:
+        description: "Dockerfile path."
+        required: false
+        default: "Dockerfile"
+        type: string
+      platforms:
+        description: "Docker build platforms."
+        required: false
+        default: "linux/amd64,linux/arm64"
+        type: string
+      deploy_target:
+        description: "Highest environment to deploy sequentially."
+        required: true
+        default: "prod"
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      stack_name:
+        description: "Optional CloudFormation stack prefix (environment suffix added automatically)."
+        required: false
+        type: string
+      template_file:
+        description: "CloudFormation template path."
+        required: false
+        default: "common/cloudformation/templates/ecs-service.yaml"
+        type: string
+      config_prefix:
+        description: "Prefix for application config files (e.g. path/application)."
+        required: false
+        default: "common/cloudformation/templates/application"
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+  packages: read
+
+concurrency:
+  group: ecs-cf-pipeline-${{ github.repository }}-${{ inputs.service_name || vars.DEFAULT_SERVICE_NAME || 'default-service' }}
+  cancel-in-progress: false
+
+jobs:
+  validate-config:
+    name: Validate workflow inputs and template
+    runs-on: ubuntu-24.04
+    outputs:
+      normalized_service_name: ${{ steps.validate.outputs.normalized_service_name }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate names and config files
+        id: validate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SERVICE_NAME_INPUT="${{ inputs.service_name }}"
+          SERVICE_NAME_FROM_VAR="${{ vars.DEFAULT_SERVICE_NAME }}"
+          SERVICE_NAME_RAW="$SERVICE_NAME_INPUT"
+          if [ -z "$SERVICE_NAME_RAW" ]; then
+            SERVICE_NAME_RAW="$SERVICE_NAME_FROM_VAR"
+          fi
+          if [ -z "$SERVICE_NAME_RAW" ]; then
+            echo "service_name is required unless DEFAULT_SERVICE_NAME GitHub variable is set"
+            exit 1
+          fi
+          SERVICE_NAME="$(echo "$SERVICE_NAME_RAW" | tr '[:upper:]' '[:lower:]')"
+          STACK_NAME_INPUT="${{ inputs.stack_name }}"
+          TEMPLATE_FILE="${{ inputs.template_file }}"
+          CONFIG_PREFIX="${{ inputs.config_prefix }}"
+          DEPLOY_TARGET="${{ inputs.deploy_target }}"
+
+          if [[ ! "$SERVICE_NAME" =~ ^[a-z0-9-]{2,50}$ ]]; then
+            echo "service_name must match ^[a-z0-9-]{2,50}$ after lowercase normalization"
+            exit 1
+          fi
+
+          echo "normalized_service_name=$SERVICE_NAME" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$STACK_NAME_INPUT" ] && [[ ! "$STACK_NAME_INPUT" =~ ^[a-zA-Z][-a-zA-Z0-9]{1,80}$ ]]; then
+            echo "stack_name must match ^[a-zA-Z][-a-zA-Z0-9]{1,80}$"
+            exit 1
+          fi
+
+          if [ ! -f "$TEMPLATE_FILE" ]; then
+            echo "Template file not found: $TEMPLATE_FILE"
+            exit 1
+          fi
+
+          check_config() {
+            local env="$1"
+            local file="${CONFIG_PREFIX}-${env}.yaml"
+            if [ ! -f "$file" ]; then
+              echo "Missing environment config file: $file"
+              exit 1
+            fi
+          }
+
+          case "$DEPLOY_TARGET" in
+            dev)
+              check_config dev
+              ;;
+            staging)
+              check_config dev
+              check_config staging
+              ;;
+            prod)
+              check_config dev
+              check_config staging
+              check_config prod
+              ;;
+          esac
+
+      - name: Lint CloudFormation template
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --quiet cfn-lint
+          cfn-lint "${{ inputs.template_file }}"
+
+  build-dev:
+    name: Build & Push (dev)
+    needs: validate-config
+    uses: ./.github/workflows/build-push-image.yaml
+    with:
+      service_name: ${{ needs.validate-config.outputs.normalized_service_name }}
+      image_tag: ${{ inputs.image_tag }}
+      context: ${{ inputs.context }}
+      dockerfile: ${{ inputs.dockerfile }}
+      platforms: ${{ inputs.platforms }}
+    secrets: inherit
+
+  deploy-dev:
+    name: Deploy (dev)
+    needs:
+      - validate-config
+      - build-dev
+    if: ${{ contains(fromJson('["dev","staging","prod"]'), inputs.deploy_target) }}
+    uses: ./.github/workflows/ecs-cloudformation-deploy.yaml
+    with:
+      environment_name: dev
+      service_name: ${{ needs.validate-config.outputs.normalized_service_name }}
+      image_tag: ${{ inputs.image_tag }}
+      aws_role_arn: ${{ vars.DEV_ROLE_ARN }}
+      aws_region: ${{ vars.AWS_REGION }}
+      ecr_url: ${{ vars.DEV_ECR_URL }}
+      ecs_cluster_name: ${{ vars.DEV_ECS_CLUSTER_NAME }}
+      subnet_ids: ${{ vars.DEV_SUBNET_IDS }}
+      security_group_ids: ${{ vars.DEV_SECURITY_GROUP_IDS }}
+      task_execution_role_arn: ${{ vars.DEV_TASK_EXEC_ROLE_ARN }}
+      task_role_arn: ${{ vars.DEV_TASK_ROLE_ARN }}
+      template_file: ${{ inputs.template_file }}
+      application_config_file: ${{ format('{0}-dev.yaml', inputs.config_prefix) }}
+      stack_name: ${{ format('{0}-dev', inputs.stack_name != '' && inputs.stack_name || needs.validate-config.outputs.normalized_service_name) }}
+    secrets: inherit
+
+  promote-staging:
+    name: Promote to staging
+    needs:
+      - validate-config
+      - build-dev
+      - deploy-dev
+    if: ${{ contains(fromJson('["staging","prod"]'), inputs.deploy_target) && needs.build-dev.result == 'success' && needs.deploy-dev.result == 'success' }}
+    uses: ./.github/workflows/promote-image.yaml
+    with:
+      service_name: ${{ needs.validate-config.outputs.normalized_service_name }}
+      image_tag: ${{ inputs.image_tag }}
+      src_role_arn: ${{ vars.DEV_ROLE_ARN }}
+      src_ecr_url: ${{ vars.DEV_ECR_URL }}
+      dst_role_arn: ${{ vars.STAGING_ROLE_ARN }}
+      dst_ecr_url: ${{ vars.STAGING_ECR_URL }}
+      deploy_env: staging
+    secrets: inherit
+
+  deploy-staging:
+    name: Deploy (staging)
+    needs:
+      - validate-config
+      - promote-staging
+    if: ${{ contains(fromJson('["staging","prod"]'), inputs.deploy_target) }}
+    uses: ./.github/workflows/ecs-cloudformation-deploy.yaml
+    with:
+      environment_name: staging
+      service_name: ${{ needs.validate-config.outputs.normalized_service_name }}
+      image_tag: ${{ inputs.image_tag }}
+      aws_role_arn: ${{ vars.STAGING_ROLE_ARN }}
+      aws_region: ${{ vars.AWS_REGION }}
+      ecr_url: ${{ vars.STAGING_ECR_URL }}
+      ecs_cluster_name: ${{ vars.STAGING_ECS_CLUSTER_NAME }}
+      subnet_ids: ${{ vars.STAGING_SUBNET_IDS }}
+      security_group_ids: ${{ vars.STAGING_SECURITY_GROUP_IDS }}
+      task_execution_role_arn: ${{ vars.STAGING_TASK_EXEC_ROLE_ARN }}
+      task_role_arn: ${{ vars.STAGING_TASK_ROLE_ARN }}
+      template_file: ${{ inputs.template_file }}
+      application_config_file: ${{ format('{0}-staging.yaml', inputs.config_prefix) }}
+      stack_name: ${{ format('{0}-staging', inputs.stack_name != '' && inputs.stack_name || needs.validate-config.outputs.normalized_service_name) }}
+    secrets: inherit
+
+  promote-prod:
+    name: Promote to prod
+    needs:
+      - validate-config
+      - promote-staging
+      - deploy-staging
+    if: ${{ inputs.deploy_target == 'prod' && needs.promote-staging.result == 'success' && needs.deploy-staging.result == 'success' }}
+    uses: ./.github/workflows/promote-image.yaml
+    with:
+      service_name: ${{ needs.validate-config.outputs.normalized_service_name }}
+      image_tag: ${{ inputs.image_tag }}
+      src_role_arn: ${{ vars.STAGING_ROLE_ARN }}
+      src_ecr_url: ${{ vars.STAGING_ECR_URL }}
+      dst_role_arn: ${{ vars.PROD_ROLE_ARN }}
+      dst_ecr_url: ${{ vars.PROD_ECR_URL }}
+      deploy_env: prod
+    secrets: inherit
+
+  deploy-prod:
+    name: Deploy (prod)
+    needs:
+      - validate-config
+      - promote-prod
+    if: ${{ inputs.deploy_target == 'prod' }}
+    uses: ./.github/workflows/ecs-cloudformation-deploy.yaml
+    with:
+      environment_name: prod
+      service_name: ${{ needs.validate-config.outputs.normalized_service_name }}
+      image_tag: ${{ inputs.image_tag }}
+      aws_role_arn: ${{ vars.PROD_ROLE_ARN }}
+      aws_region: ${{ vars.AWS_REGION }}
+      ecr_url: ${{ vars.PROD_ECR_URL }}
+      ecs_cluster_name: ${{ vars.PROD_ECS_CLUSTER_NAME }}
+      subnet_ids: ${{ vars.PROD_SUBNET_IDS }}
+      security_group_ids: ${{ vars.PROD_SECURITY_GROUP_IDS }}
+      task_execution_role_arn: ${{ vars.PROD_TASK_EXEC_ROLE_ARN }}
+      task_role_arn: ${{ vars.PROD_TASK_ROLE_ARN }}
+      template_file: ${{ inputs.template_file }}
+      application_config_file: ${{ format('{0}-prod.yaml', inputs.config_prefix) }}
+      stack_name: ${{ format('{0}-prod', inputs.stack_name != '' && inputs.stack_name || needs.validate-config.outputs.normalized_service_name) }}
+    secrets: inherit
