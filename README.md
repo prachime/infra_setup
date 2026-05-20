@@ -59,6 +59,7 @@ These provide infrastructure wiring and account-specific values.
 Global:
 
 - `AWS_REGION`
+- `DEFAULT_SERVICE_NAME` (optional fallback when `service_name` input is left empty)
 
 DEV:
 
@@ -126,6 +127,27 @@ Validation rules enforced in deploy workflow:
 - Empty values are rejected.
 - Max 10 plain env vars and 10 secret env vars per file.
 
+## Source-of-Truth Matrix
+
+- `service_name`
+  - Primary source: workflow input `service_name`
+  - Fallback source: GitHub variable `DEFAULT_SERVICE_NAME`
+  - Processing: always normalized to lowercase
+- `image_tag`
+  - Source: workflow input `image_tag`
+  - Fallback: `GITHUB_RUN_ID`
+- `stack_name`
+  - Source: workflow input `stack_name` (optional)
+  - Fallback: `<normalized_service_name>-<env>`
+- Build settings (`context`, `dockerfile`, `platforms`)
+  - Source: workflow inputs
+- Infra wiring (`ROLE_ARN`, `ECR_URL`, `CLUSTER_NAME`, `SUBNET_IDS`, `SECURITY_GROUP_IDS`, task role ARNs)
+  - Source: GitHub environment/repository variables (`DEV_*`, `STAGING_*`, `PROD_*`, `AWS_REGION`)
+- Service deployment behavior (`DesiredCount`, `Cpu`, `Memory`, rollout config, target group, etc.)
+  - Source: `application-<env>.yaml`
+- Container plain env vars and secrets
+  - Source: `application-<env>.yaml` via `Env.*` and `Secret.*`
+
 ## How Values Reach ECS Task Definition
 
 - `ecs-cloudformation-deploy.yaml` reads:
@@ -159,13 +181,15 @@ Example entries:
 
 In GitHub Actions, run `Generic ECS CloudFormation Pipeline` and fill inputs:
 
-- `service_name`: logical service identifier (any case accepted; pipeline lowercases it).
+- `service_name`: logical service identifier (any case accepted; pipeline lowercases it). Optional if `DEFAULT_SERVICE_NAME` is configured.
 - `deploy_target`: `dev`, `staging`, or `prod`.
 - `context` and `dockerfile`: Docker build config.
 - `image_tag`: optional fixed tag (default is run id).
 - `stack_name`: optional stack prefix.
 - `template_file`: service-specific template path if not using default.
 - `config_prefix`: service-specific application config prefix.
+
+If both `service_name` input and `DEFAULT_SERVICE_NAME` are empty, the workflow fails early in validation.
 
 ## Reusing for Multiple Services
 
